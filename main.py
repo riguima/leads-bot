@@ -3,7 +3,7 @@ import re
 import toml
 from sqlalchemy import select
 from telebot import TeleBot
-from telebot.util import quick_markup
+from telebot.util import quick_markup, update_types
 
 from leads_bot.config import config
 from leads_bot.database import Session
@@ -321,6 +321,45 @@ def stop_show_chats_ids(message):
     showing_chats_ids = False
 
 
+@bot.message_handler(content_types=['new_chat_members'])
+def send_welcome_message(message):
+    with Session() as session:
+        for lead in session.scalars(select(Lead)).all():
+            if lead.chat_id == str(message.chat.id):
+                for welcome_message in lead.welcome_messages:
+                    send_message_from_model(
+                        message.from_user.id, welcome_message
+                    )
+
+
+@bot.message_handler(content_types=['left_chat_member'])
+def send_member_left_message(message):
+    with Session() as session:
+        for lead in session.scalars(select(Lead)).all():
+            if lead.chat_id == str(message.chat.id):
+                for member_left_message in lead.member_left_messages:
+                    send_message_from_model(
+                        message.from_user.id, member_left_message
+                    )
+
+
+@bot.chat_member_handler()
+def send_channel_member_message(update):
+    with Session() as session:
+        for lead in session.scalars(select(Lead)).all():
+            if lead.chat_id == str(update.chat.id):
+                if update.new_chat_member.status == 'member':
+                    for welcome_message in lead.welcome_messages:
+                        send_message_from_model(
+                            update.from_user.id, welcome_message
+                        )
+                elif update.new_chat_member.status == 'left':
+                    for member_left_message in lead.member_left_messages:
+                        send_message_from_model(
+                            update.from_user.id, member_left_message
+                        )
+
+
 @bot.message_handler()
 def show_chat_id(message):
     if showing_chats_ids:
@@ -339,4 +378,4 @@ def show_channel_id(message):
 
 
 if __name__ == '__main__':
-    bot.infinity_polling()
+    bot.infinity_polling(allowed_updates=update_types)
