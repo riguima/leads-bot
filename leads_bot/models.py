@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -14,20 +14,40 @@ class Lead(Base):
     __tablename__ = 'leads'
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[str]
-    welcome_messages: Mapped[List['Message']] = relationship(
-        back_populates='lead'
+    welcome_messages: Mapped[List['WelcomeMessage']] = relationship(
+        back_populates='lead',
+        cascade='all, delete-orphan',
     )
-    member_left_messages: Mapped[List['Message']] = relationship(
-        back_populates='lead'
+    member_left_messages: Mapped[List['MemberLeftMessage']] = relationship(
+        back_populates='lead',
+        cascade='all, delete-orphan',
     )
 
 
-class Message(Base):
-    __tablename__ = 'messages'
+class WelcomeMessage(Base):
+    __tablename__ = 'welcome_messages'
     id: Mapped[int] = mapped_column(primary_key=True)
-    message_id: Mapped[str]
-    lead: Mapped['Lead'] = relationship(back_populates='messages')
+    lead: Mapped['Lead'] = relationship(back_populates='welcome_messages')
     lead_id: Mapped[int] = mapped_column(ForeignKey('leads.id'))
+    photo_id: Mapped[Optional[str]]
+    audio_id: Mapped[Optional[str]]
+    document_id: Mapped[Optional[str]]
+    video_id: Mapped[Optional[str]]
+    text: Mapped[Optional[str]]
+    caption: Mapped[Optional[str]]
+
+
+class MemberLeftMessage(Base):
+    __tablename__ = 'member_left_messages'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead: Mapped['Lead'] = relationship(back_populates='member_left_messages')
+    lead_id: Mapped[int] = mapped_column(ForeignKey('leads.id'))
+    photo_id: Mapped[Optional[str]]
+    audio_id: Mapped[Optional[str]]
+    document_id: Mapped[Optional[str]]
+    video_id: Mapped[Optional[str]]
+    text: Mapped[Optional[str]]
+    caption: Mapped[Optional[str]]
 
 
 Base.metadata.create_all(db)
