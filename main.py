@@ -5,8 +5,8 @@ from uuid import uuid4
 from sqlalchemy import select
 from telebot import TeleBot
 from telebot.util import quick_markup, update_types
-from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError
+from telethon.sync import TelegramClient
 
 from leads_bot.config import config
 from leads_bot.database import Session
@@ -203,17 +203,41 @@ def show_accounts(callback_query):
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'add_chat')
-def add_chat(callback_query):
-    bot.send_message(
-        callback_query.message.chat.id, 'Digite o ID do Canal/Grupo'
-    )
-    bot.register_next_step_handler(callback_query.message, on_chat_id)
+def configure_chat(callback_query):
+    with Session() as session:
+        reply_markup = {}
+        for account in session.scalars(select(Account)).all():
+            reply_markup[account.username] = {
+                'callback_data': f'on_account:{account.id}'
+            }
+        reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
+        bot.send_message(
+            callback_query.message.chat.id,
+            'Escolha uma conta:',
+            reply_markup=quick_markup(reply_markup, row_width=1),
+        )
 
 
-def on_chat_id(message):
+@bot.callback_query_handler(
+    func=lambda c: bool(re.findall(r'on_account:\d+', c.data))
+)
+def on_account(callback_query):
+    with Session() as session:
+        account_id = int(callback_query.data.split(':')[-1])
+        account = session.get(Account, account_id)
+        bot.send_message(
+            callback_query.message.chat.id,
+            'Digite o ID ou Título do Canal/Grupo',
+        )
+        bot.register_next_step_handler(
+            callback_query.message, lambda m: on_chat(m, account)
+        )
+
+
+def on_chat(message, account):
     global chat_config_id, welcome_messages, member_left_messages
     with Session() as session:
-        chat_config = ChatConfig(chat_id=message.text)
+        chat_config = ChatConfig(chat=message.text, account=account)
         session.add(chat_config)
         session.commit()
         session.flush()
@@ -280,9 +304,14 @@ def remove_from_chat(callback_query):
     with Session() as session:
         reply_markup = {}
         for chat_config in session.scalars(select(ChatConfig)).all():
-            reply_markup[bot.get_chat(int(chat_config.chat_id)).title] = {
-                'callback_data': f'remove_from_chat:{chat_config.id}'
-            }
+            if re.findall(r'^-\d+$', chat_config.chat):
+                reply_markup[bot.get_chat(int(chat_config.chat)).title] = {
+                    'callback_data': f'remove_from_chat:{chat_config.id}'
+                }
+            else:
+                reply_markup[chat_config.chat] = {
+                    'callback_data': f'remove_from_chat:{chat_config.id}'
+                }
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
         bot.send_message(
             callback_query.message.chat.id,
@@ -311,9 +340,14 @@ def show_chats(callback_query):
     with Session() as session:
         reply_markup = {}
         for chat_config in session.scalars(select(ChatConfig)).all():
-            reply_markup[bot.get_chat(int(chat_config.chat_id)).title] = {
-                'callback_data': f'show_chat:{chat_config.id}'
-            }
+            if re.findall(r'^-\d+$', chat_config.chat):
+                reply_markup[bot.get_chat(int(chat_config.chat)).title] = {
+                    'callback_data': f'show_chat:{chat_config.id}'
+                }
+            else:
+                reply_markup[chat_config.chat] = {
+                    'callback_data': f'show_chat:{chat_config.id}'
+                }
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
         bot.send_message(
             callback_query.message.chat.id,
@@ -425,29 +459,50 @@ def on_edit_member_left_message(message):
         bot.register_next_step_handler(message, on_edit_member_left_message)
 
 
-def send_message_from_model(chat_id, model):
+def send_message_from_model(chat, model, account_id=None):
     medias = {
         model.photo_id: bot.send_photo,
         model.audio_id: bot.send_audio,
         model.document_id: bot.send_document,
         model.video_id: bot.send_video,
     }
-    if model.text:
-        bot.send_message(chat_id, model.text)
+    if account_id:
+        with TelegramClient(
+            account_id, config['api_id'], config['api_hash']
+        ) as client:
+            if model.text:
+                client.send_message(chat, model.text)
+            else:
+                for media_id in medias.keys():
+                    if media_id:
+                        file_info = bot.get_file(media_id)
+                        content = bot.download_file(file_info.file_path)
+                        with open(file_info.file_path, 'wb') as f:
+                            f.write(content)
+                        client.send_file(
+                            chat, file_info.file_path, caption=model.caption
+                        )
     else:
-        for media_id, function in medias.items():
-            if media_id:
-                file_info = bot.get_file(media_id)
-                content = bot.download_file(file_info.file_path)
-                function(chat_id, content, model.caption)
+        if model.text:
+            bot.send_message(chat, model.text)
+        else:
+            for media_id, function in medias.items():
+                if media_id:
+                    file_info = bot.get_file(media_id)
+                    content = bot.download_file(file_info.file_path)
+                    function(chat, content, model.caption)
 
 
 def send_chat_options(message, chat_config):
     global chat_config_id
     chat_config_id = chat_config.id
+    if re.findall(r'^-\d+$l', chat_config.chat):
+        chat_title = bot.get_chat(int(chat_config.chat)).title
+    else:
+        chat_title = chat_config.chat
     bot.send_message(
         message.chat.id,
-        bot.get_chat(int(chat_config.chat_id)).title,
+        chat_title,
         reply_markup=quick_markup(
             {
                 'Ver - Mensagem de Boas-Vindas': {
@@ -492,10 +547,12 @@ def stop_show_chats_ids(message):
 def send_welcome_message(message):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
-            if chat_config.chat_id == str(message.chat.id):
+            if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 for welcome_message in chat_config.welcome_messages:
                     send_message_from_model(
-                        message.from_user.id, welcome_message
+                        message.from_user.id,
+                        welcome_message,
+                        chat_config.account.account_id,
                     )
 
 
@@ -503,10 +560,12 @@ def send_welcome_message(message):
 def send_member_left_message(message):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
-            if chat_config.chat_id == str(message.chat.id):
+            if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 for member_left_message in chat_config.member_left_messages:
                     send_message_from_model(
-                        message.from_user.id, member_left_message
+                        message.from_user.id,
+                        member_left_message,
+                        chat_config.account.account_id,
                     )
 
 
@@ -514,18 +573,22 @@ def send_member_left_message(message):
 def send_channel_member_message(update):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
-            if chat_config.chat_id == str(update.chat.id):
+            if chat_config.chat in [str(update.chat.id), update.chat.title]:
                 if update.new_chat_member.status == 'member':
                     for welcome_message in chat_config.welcome_messages:
                         send_message_from_model(
-                            update.from_user.id, welcome_message
+                            update.from_user.id,
+                            welcome_message,
+                            chat_config.account.account_id,
                         )
                 elif update.new_chat_member.status == 'left':
                     for (
                         member_left_message
                     ) in chat_config.member_left_messages:
                         send_message_from_model(
-                            update.from_user.id, member_left_message
+                            update.from_user.id,
+                            member_left_message,
+                            chat_config.account.account_id,
                         )
 
 

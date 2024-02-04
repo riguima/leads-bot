@@ -13,7 +13,8 @@ class Base(DeclarativeBase):
 class ChatConfig(Base):
     __tablename__ = 'chats_configs'
     id: Mapped[int] = mapped_column(primary_key=True)
-    chat_id: Mapped[str]
+    chat: Mapped[str]
+    account: Mapped['Account'] = relationship(back_populates='chat_config')
     welcome_messages: Mapped[List['WelcomeMessage']] = relationship(
         back_populates='chat_config',
         cascade='all, delete-orphan',
@@ -59,6 +60,8 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     account_id: Mapped[str]
     username: Mapped[str]
+    chat_config: Mapped['ChatConfig'] = relationship(back_populates='account')
+    chat_config_id: Mapped[int] = mapped_column(ForeignKey('chats_configs.id'))
 
 
 Base.metadata.create_all(db)
