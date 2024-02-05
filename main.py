@@ -5,8 +5,8 @@ from uuid import uuid4
 from sqlalchemy import select
 from telebot import TeleBot
 from telebot.util import quick_markup, update_types
+from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError
-from telethon.sync import TelegramClient
 
 from leads_bot.config import config
 from leads_bot.database import Session
@@ -98,10 +98,9 @@ async def send_code_request(message, account_id):
             accounts_usernames = [
                 a.username for a in session.scalars(select(Account)).all()
             ]
-            if me.username not in accounts_usernames:
-                session.add(
-                    Account(account_id=account_id, username=me.username)
-                )
+            username = me.username or f'{me.first_name} {me.last_name}'
+            if username not in accounts_usernames:
+                session.add(Account(account_id=account_id, username=username))
                 session.commit()
         start(message)
 
@@ -152,8 +151,9 @@ async def sign_in_client(
         accounts_usernames = [
             a.username for a in session.scalars(select(Account)).all()
         ]
-        if me.username not in accounts_usernames:
-            session.add(Account(account_id=account_id, username=me.username))
+        username = me.username or f'{me.first_name} {me.last_name}'
+        if username not in accounts_usernames:
+            session.add(Account(account_id=account_id, username=username))
             session.commit()
 
 
@@ -202,7 +202,7 @@ def show_accounts(callback_query):
         )
 
 
-@bot.callback_query_handler(func=lambda c: c.data == 'add_chat')
+@bot.callback_query_handler(func=lambda c: c.data == 'configure_chat')
 def configure_chat(callback_query):
     with Session() as session:
         reply_markup = {}
@@ -459,38 +459,45 @@ def on_edit_member_left_message(message):
         bot.register_next_step_handler(message, on_edit_member_left_message)
 
 
-def send_message_from_model(chat, model, account_id=None):
+def send_message_from_model(chat, model):
     medias = {
         model.photo_id: bot.send_photo,
         model.audio_id: bot.send_audio,
         model.document_id: bot.send_document,
         model.video_id: bot.send_video,
     }
-    if account_id:
-        with TelegramClient(
-            account_id, config['api_id'], config['api_hash']
-        ) as client:
-            if model.text:
-                client.send_message(chat, model.text)
-            else:
-                for media_id in medias.keys():
-                    if media_id:
-                        file_info = bot.get_file(media_id)
-                        content = bot.download_file(file_info.file_path)
-                        with open(file_info.file_path, 'wb') as f:
-                            f.write(content)
-                        client.send_file(
-                            chat, file_info.file_path, caption=model.caption
-                        )
+    if model.text:
+        bot.send_message(chat, model.text)
     else:
-        if model.text:
-            bot.send_message(chat, model.text)
-        else:
-            for media_id, function in medias.items():
-                if media_id:
-                    file_info = bot.get_file(media_id)
-                    content = bot.download_file(file_info.file_path)
-                    function(chat, content, model.caption)
+        for media_id, function in medias.items():
+            if media_id:
+                file_info = bot.get_file(media_id)
+                content = bot.download_file(file_info.file_path)
+                function(chat, content, model.caption)
+
+
+async def send_message_from_model_with_client(chat, model, account_id):
+    medias = [
+        model.photo_id,
+        model.audio_id,
+        model.document_id,
+        model.video_id,
+    ]
+    client = TelegramClient(account_id, config['api_id'], config['api_hash'])
+    await client.start()
+    if model.text:
+        await client.send_message(chat, model.text)
+    else:
+        for media_id in medias:
+            if media_id:
+                file_info = bot.get_file(media_id)
+                content = bot.download_file(file_info.file_path)
+                with open(file_info.file_path, 'wb') as f:
+                    f.write(content)
+                await client.send_file(
+                    chat, file_info.file_path, caption=model.caption
+                )
+    await client.disconnect()
 
 
 def send_chat_options(message, chat_config):
@@ -549,10 +556,12 @@ def send_welcome_message(message):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 for welcome_message in chat_config.welcome_messages:
-                    send_message_from_model(
-                        message.from_user.id,
-                        welcome_message,
-                        chat_config.account.account_id,
+                    loop.run_until_complete(
+                        send_message_from_model_with_client(
+                            message.from_user.id,
+                            welcome_message,
+                            chat_config.account.account_id,
+                        )
                     )
 
 
@@ -562,10 +571,12 @@ def send_member_left_message(message):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 for member_left_message in chat_config.member_left_messages:
-                    send_message_from_model(
-                        message.from_user.id,
-                        member_left_message,
-                        chat_config.account.account_id,
+                    loop.run_until_complete(
+                        send_message_from_model_with_client(
+                            message.from_user.id,
+                            member_left_message,
+                            chat_config.account.account_id,
+                        )
                     )
 
 
@@ -576,19 +587,23 @@ def send_channel_member_message(update):
             if chat_config.chat in [str(update.chat.id), update.chat.title]:
                 if update.new_chat_member.status == 'member':
                     for welcome_message in chat_config.welcome_messages:
-                        send_message_from_model(
-                            update.from_user.id,
-                            welcome_message,
-                            chat_config.account.account_id,
+                        loop.run_until_complete(
+                            send_message_from_model_with_client(
+                                update.from_user.id,
+                                welcome_message,
+                                chat_config.account.account_id,
+                            )
                         )
                 elif update.new_chat_member.status == 'left':
                     for (
                         member_left_message
                     ) in chat_config.member_left_messages:
-                        send_message_from_model(
-                            update.from_user.id,
-                            member_left_message,
-                            chat_config.account.account_id,
+                        loop.run_until_complete(
+                            send_message_from_model_with_client(
+                                update.from_user.id,
+                                member_left_message,
+                                chat_config.account.account_id,
+                            )
                         )
 
 
