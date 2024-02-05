@@ -486,7 +486,10 @@ async def send_message_from_model_with_client(chat, model, account_id):
     client = TelegramClient(account_id, config['api_id'], config['api_hash'])
     await client.start()
     if model.text:
-        await client.send_message(chat, model.text)
+        try:
+            await client.send_message(chat, model.text)
+        except ValueError:
+            await client.send_message(bot.get_chat(chat).username, model.text)
     else:
         for media_id in medias:
             if media_id:
@@ -494,9 +497,14 @@ async def send_message_from_model_with_client(chat, model, account_id):
                 content = bot.download_file(file_info.file_path)
                 with open(file_info.file_path, 'wb') as f:
                     f.write(content)
-                await client.send_file(
-                    chat, file_info.file_path, caption=model.caption
-                )
+                try:
+                    await client.send_file(
+                        chat, file_info.file_path, caption=model.caption
+                    )
+                except ValueError:
+                    await client.send_message(
+                        bot.get_chat(chat).username, model.text
+                    )
     await client.disconnect()
 
 
