@@ -502,8 +502,8 @@ async def send_message_from_model_with_client(chat, model, account_id):
                         chat, file_info.file_path, caption=model.caption
                     )
                 except ValueError:
-                    await client.send_message(
-                        bot.get_chat(chat).username, model.text
+                    await client.send_file(
+                        bot.get_chat(chat).username, file_info.file_path, caption=model.caption
                     )
     await client.disconnect()
 
