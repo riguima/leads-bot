@@ -98,7 +98,7 @@ async def send_code_request(message, account_id):
             accounts_usernames = [
                 a.username for a in session.scalars(select(Account)).all()
             ]
-            username = me.username or f'{me.first_name} {me.last_name}'
+            username = me.username or f'{me.first_name}{" " + me.last_name if me.last_name else ""}'
             if username not in accounts_usernames:
                 session.add(Account(account_id=account_id, username=username))
                 session.commit()
@@ -151,7 +151,7 @@ async def sign_in_client(
         accounts_usernames = [
             a.username for a in session.scalars(select(Account)).all()
         ]
-        username = me.username or f'{me.first_name} {me.last_name}'
+        username = me.username or f'{me.first_name}{" " + me.last_name if me.last_name else ""}'
         if username not in accounts_usernames:
             session.add(Account(account_id=account_id, username=username))
             session.commit()
