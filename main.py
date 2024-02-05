@@ -503,7 +503,9 @@ async def send_message_from_model_with_client(chat, model, account_id):
                     )
                 except ValueError:
                     await client.send_file(
-                        bot.get_chat(chat).username, file_info.file_path, caption=model.caption
+                        bot.get_chat(chat).username,
+                        file_info.file_path,
+                        caption=model.caption,
                     )
     await client.disconnect()
 
@@ -619,7 +621,7 @@ def send_channel_member_message(update):
 def show_chat_id(message):
     if showing_chats_ids:
         bot.send_message(
-            config['user_id'],
+            user_id,
             f'{message.chat.title or message.chat.username} | {message.chat.id}',
         )
 
@@ -627,9 +629,7 @@ def show_chat_id(message):
 @bot.channel_post_handler()
 def show_channel_id(message):
     if showing_chats_ids:
-        bot.send_message(
-            config['user_id'], f'{message.chat.title} | {message.chat.id}'
-        )
+        bot.send_message(user_id, f'{message.chat.title} | {message.chat.id}')
 
 
 if __name__ == '__main__':
