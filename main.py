@@ -477,7 +477,7 @@ def send_message_from_model(chat, model):
                 function(chat, content, model.caption)
 
 
-async def send_message_from_model_with_client(chat, model, account_id):
+async def send_message_from_model_with_client(user_id, model, account_id, chat=None):
     global clients
     medias = [
         model.photo_id,
@@ -491,27 +491,26 @@ async def send_message_from_model_with_client(chat, model, account_id):
         client = TelegramClient(account_id, config['api_id'], config['api_hash'])
         await client.start()
         clients[account_id] = client
-    if model.text:
-        try:
-            await client.send_message(chat, model.text)
-        except ValueError:
-            await client.send_message(bot.get_chat(chat).username, model.text)
+    user = None
+    if chat:
+        members = await client.get_participants(entity=chat)
+        for member in members:
+            if member.id == user_id:
+                user = member
     else:
-        for media_id in medias:
-            if media_id:
-                file_info = bot.get_file(media_id)
-                content = bot.download_file(file_info.file_path)
-                with open(file_info.file_path, 'wb') as f:
-                    f.write(content)
-                try:
+        user = await client.get_entity(user_id)
+    if user:
+        if model.text:
+            await client.send_message(user, model.text)
+        else:
+            for media_id in medias:
+                if media_id:
+                    file_info = bot.get_file(media_id)
+                    content = bot.download_file(file_info.file_path)
+                    with open(file_info.file_path, 'wb') as f:
+                        f.write(content)
                     await client.send_file(
-                        chat, file_info.file_path, caption=model.caption
-                    )
-                except ValueError:
-                    await client.send_file(
-                        bot.get_chat(chat).username,
-                        file_info.file_path,
-                        caption=model.caption,
+                        user, file_info.file_path, caption=model.caption
                     )
 
 
@@ -576,6 +575,7 @@ def send_welcome_message(message):
                             message.from_user.id,
                             welcome_message,
                             chat_config.account.account_id,
+                            chat=message.chat.id,
                         )
                     )
 
@@ -607,6 +607,7 @@ def send_channel_member_message(update):
                                 update.from_user.id,
                                 welcome_message,
                                 chat_config.account.account_id,
+                                chat=update.chat.id,
                             )
                         )
                 elif update.new_chat_member.status == 'left':
