@@ -22,6 +22,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 welcome_messages = []
 member_left_messages = []
+clients = {}
 
 
 @bot.message_handler(commands=['start', 'help'])
@@ -477,14 +478,19 @@ def send_message_from_model(chat, model):
 
 
 async def send_message_from_model_with_client(chat, model, account_id):
+    global clients
     medias = [
         model.photo_id,
         model.audio_id,
         model.document_id,
         model.video_id,
     ]
-    client = TelegramClient(account_id, config['api_id'], config['api_hash'])
-    await client.start()
+    if account_id in clients:
+        client = clients[account_id]
+    else:
+        client = TelegramClient(account_id, config['api_id'], config['api_hash'])
+        await client.start()
+        clients[account_id] = client
     if model.text:
         try:
             await client.send_message(chat, model.text)
@@ -507,7 +513,6 @@ async def send_message_from_model_with_client(chat, model, account_id):
                         file_info.file_path,
                         caption=model.caption,
                     )
-    await client.disconnect()
 
 
 def send_chat_options(message, chat_config):
