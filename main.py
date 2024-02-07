@@ -595,6 +595,21 @@ def send_member_left_message(message):
                     )
 
 
+@bot.chat_join_request_handler()
+def on_chat_joint_request(request):
+    with Session() as session:
+        for chat_config in session.scalars(select(ChatConfig)).all():
+            if chat_config.chat in [str(request.chat.id), request.chat.title]:
+                for welcome_message in chat_config.welcome_messages:
+                    loop.run_until_complete(
+                        send_message_from_model_with_client(
+                            request.user_chat_id,
+                            welcome_message,
+                            chat_config.account.account_id,
+                        )
+                    )
+
+
 @bot.chat_member_handler()
 def send_channel_member_message(update):
     with Session() as session:
