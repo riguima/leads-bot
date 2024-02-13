@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import Column, ForeignKey, Table
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from leads_bot.database import db
@@ -10,11 +10,21 @@ class Base(DeclarativeBase):
     pass
 
 
+chat_config_account_table = Table(
+    'chat_config_account_association_table',
+    Base.metadata,
+    Column('chat_config_id', ForeignKey('chats_configs.id')),
+    Column('account_id', ForeignKey('accounts.id')),
+)
+
+
 class ChatConfig(Base):
     __tablename__ = 'chats_configs'
     id: Mapped[int] = mapped_column(primary_key=True)
     chat: Mapped[str]
-    account: Mapped['Account'] = relationship(back_populates='chat_config')
+    accounts: Mapped[List['Account']] = relationship(
+        secondary=chat_config_account_table
+    )
     welcome_messages: Mapped[List['WelcomeMessage']] = relationship(
         back_populates='chat_config',
         cascade='all, delete-orphan',
@@ -60,12 +70,6 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     account_id: Mapped[str]
     username: Mapped[str]
-    chat_config: Mapped[Optional['ChatConfig']] = relationship(
-        back_populates='account'
-    )
-    chat_config_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey('chats_configs.id')
-    )
 
 
 Base.metadata.create_all(db)

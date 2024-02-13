@@ -1,5 +1,6 @@
 import asyncio
 import re
+from random import choice
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -18,6 +19,7 @@ bot = TeleBot(config['bot_token'])
 showing_chats_ids = False
 user_id = None
 chat_config_id = None
+accounts = []
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 welcome_messages = []
@@ -99,7 +101,10 @@ async def send_code_request(message, account_id):
             accounts_usernames = [
                 a.username for a in session.scalars(select(Account)).all()
             ]
-            username = me.username or f'{me.first_name}{" " + me.last_name if me.last_name else ""}'
+            username = (
+                me.username
+                or f'{me.first_name}{" " + me.last_name if me.last_name else ""}'
+            )
             if username not in accounts_usernames:
                 session.add(Account(account_id=account_id, username=username))
                 session.commit()
@@ -152,7 +157,10 @@ async def sign_in_client(
         accounts_usernames = [
             a.username for a in session.scalars(select(Account)).all()
         ]
-        username = me.username or f'{me.first_name}{" " + me.last_name if me.last_name else ""}'
+        username = (
+            me.username
+            or f'{me.first_name}{" " + me.last_name if me.last_name else ""}'
+        )
         if username not in accounts_usernames:
             session.add(Account(account_id=account_id, username=username))
             session.commit()
@@ -205,12 +213,15 @@ def show_accounts(callback_query):
 
 @bot.callback_query_handler(func=lambda c: c.data == 'configure_chat')
 def configure_chat(callback_query):
+    global accounts
+    accounts = []
     with Session() as session:
         reply_markup = {}
         for account in session.scalars(select(Account)).all():
             reply_markup[account.username] = {
                 'callback_data': f'on_account:{account.id}'
             }
+        reply_markup['Finalizar'] = {'callback_data': 'on_account:0'}
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
         bot.send_message(
             callback_query.message.chat.id,
@@ -225,20 +236,35 @@ def configure_chat(callback_query):
 def on_account(callback_query):
     with Session() as session:
         account_id = int(callback_query.data.split(':')[-1])
-        account = session.get(Account, account_id)
-        bot.send_message(
-            callback_query.message.chat.id,
-            'Digite o ID ou Título do Canal/Grupo',
-        )
-        bot.register_next_step_handler(
-            callback_query.message, lambda m: on_chat(m, account)
-        )
+        reply_markup = {}
+        if account_id:
+            account = session.get(Account, account_id)
+            accounts.append(account)
+            for account in session.scalars(select(Account)).all():
+                if account not in accounts:
+                    reply_markup[account.username] = {
+                        'callback_data': f'on_account:{account.id}'
+                    }
+        if account_id and reply_markup:
+            reply_markup['Finalizar'] = {'callback_data': 'on_account:0'}
+            reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
+            bot.send_message(
+                callback_query.message.chat.id,
+                'Escolha uma conta:',
+                reply_markup=quick_markup(reply_markup, row_width=1),
+            )
+        else:
+            bot.send_message(
+                callback_query.message.chat.id,
+                'Digite o ID ou Título do Canal/Grupo',
+            )
+            bot.register_next_step_handler(callback_query.message, on_chat)
 
 
-def on_chat(message, account):
+def on_chat(message):
     global chat_config_id, welcome_messages, member_left_messages
     with Session() as session:
-        chat_config = ChatConfig(chat=message.text, account=account)
+        chat_config = ChatConfig(chat=message.text, accounts=accounts)
         session.add(chat_config)
         session.commit()
         session.flush()
@@ -477,7 +503,9 @@ def send_message_from_model(chat, model):
                 function(chat, content, model.caption)
 
 
-async def send_message_from_model_with_client(user_id, model, account_id, chat=None):
+async def send_message_from_model_with_client(
+    user_id, model, account_id, chat=None
+):
     global clients
     medias = [
         model.photo_id,
@@ -488,7 +516,9 @@ async def send_message_from_model_with_client(user_id, model, account_id, chat=N
     if account_id in clients:
         client = clients[account_id]
     else:
-        client = TelegramClient(account_id, config['api_id'], config['api_hash'])
+        client = TelegramClient(
+            account_id, config['api_id'], config['api_hash']
+        )
         await client.start()
         clients[account_id] = client
     user = None
@@ -573,11 +603,12 @@ def send_welcome_message(message):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 for welcome_message in chat_config.welcome_messages:
+                    account_id = choice(chat_config.accounts).account_id
                     loop.run_until_complete(
                         send_message_from_model_with_client(
                             message.from_user.id,
                             welcome_message,
-                            chat_config.account.account_id,
+                            account_id,
                             chat=message.chat.id,
                         )
                     )
@@ -589,11 +620,12 @@ def send_member_left_message(message):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 for member_left_message in chat_config.member_left_messages:
+                    account_id = choice(chat_config.accounts).account_id
                     loop.run_until_complete(
                         send_message_from_model_with_client(
                             message.from_user.id,
                             member_left_message,
-                            chat_config.account.account_id,
+                            account_id,
                         )
                     )
 
@@ -604,11 +636,12 @@ def on_chat_joint_request(request):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(request.chat.id), request.chat.title]:
                 for welcome_message in chat_config.welcome_messages:
+                    account_id = choice(chat_config.accounts).account_id
                     loop.run_until_complete(
                         send_message_from_model_with_client(
                             request.user_chat_id,
                             welcome_message,
-                            chat_config.account.account_id,
+                            account_id,
                             chat=request.chat.id,
                         )
                     )
@@ -621,11 +654,12 @@ def send_channel_member_message(update):
             if chat_config.chat in [str(update.chat.id), update.chat.title]:
                 if update.new_chat_member.status == 'member':
                     for welcome_message in chat_config.welcome_messages:
+                        account_id = choice(chat_config.accounts).account_id
                         loop.run_until_complete(
                             send_message_from_model_with_client(
                                 update.from_user.id,
                                 welcome_message,
-                                chat_config.account.account_id,
+                                account_id,
                                 chat=update.chat.id,
                             )
                         )
@@ -633,11 +667,12 @@ def send_channel_member_message(update):
                     for (
                         member_left_message
                     ) in chat_config.member_left_messages:
+                        account_id = choice(chat_config.accounts).account_id
                         loop.run_until_complete(
                             send_message_from_model_with_client(
                                 update.from_user.id,
                                 member_left_message,
-                                chat_config.account.account_id,
+                                account_id,
                             )
                         )
 
