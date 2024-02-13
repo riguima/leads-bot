@@ -493,10 +493,13 @@ async def send_message_from_model_with_client(user_id, model, account_id, chat=N
         clients[account_id] = client
     user = None
     if chat:
-        members = await client.get_participants(entity=chat)
-        for member in members:
-            if member.id == user_id:
-                user = member
+        member_in_chat = False
+        while not member_in_chat:
+            members = await client.get_participants(entity=chat)
+            for member in members:
+                if member.id == user_id:
+                    user = member
+                    member_in_chat = True
     else:
         user = await client.get_entity(user_id)
     if user:
@@ -606,6 +609,7 @@ def on_chat_joint_request(request):
                             request.user_chat_id,
                             welcome_message,
                             chat_config.account.account_id,
+                            chat=request.chat.id,
                         )
                     )
 
