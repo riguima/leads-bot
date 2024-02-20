@@ -24,6 +24,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 welcome_messages = []
 member_left_messages = []
+accounts_session = Session()
 clients = {}
 
 
@@ -234,41 +235,39 @@ def configure_chat(callback_query):
     func=lambda c: bool(re.findall(r'on_account:\d+', c.data))
 )
 def on_account(callback_query):
-    with Session() as session:
-        account_id = int(callback_query.data.split(':')[-1])
-        reply_markup = {}
-        if account_id:
-            account = session.get(Account, account_id)
-            accounts.append(account)
-            for account in session.scalars(select(Account)).all():
-                if account not in accounts:
-                    reply_markup[account.username] = {
-                        'callback_data': f'on_account:{account.id}'
-                    }
-        if account_id and reply_markup:
-            reply_markup['Finalizar'] = {'callback_data': 'on_account:0'}
-            reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-            bot.send_message(
-                callback_query.message.chat.id,
-                'Escolha uma conta:',
-                reply_markup=quick_markup(reply_markup, row_width=1),
-            )
-        else:
-            bot.send_message(
-                callback_query.message.chat.id,
-                'Digite o ID ou Título do Canal/Grupo',
-            )
-            bot.register_next_step_handler(callback_query.message, on_chat)
+    account_id = int(callback_query.data.split(':')[-1])
+    reply_markup = {}
+    if account_id:
+        account = accounts_session.get(Account, account_id)
+        accounts.append(account)
+        for account in accounts_session.scalars(select(Account)).all():
+            if account not in accounts:
+                reply_markup[account.username] = {
+                    'callback_data': f'on_account:{account.id}'
+                }
+    if account_id and reply_markup:
+        reply_markup['Finalizar'] = {'callback_data': 'on_account:0'}
+        reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
+        bot.send_message(
+            callback_query.message.chat.id,
+            'Escolha uma conta:',
+            reply_markup=quick_markup(reply_markup, row_width=1),
+        )
+    else:
+        bot.send_message(
+            callback_query.message.chat.id,
+            'Digite o ID ou Título do Canal/Grupo',
+        )
+        bot.register_next_step_handler(callback_query.message, on_chat)
 
 
 def on_chat(message):
     global chat_config_id, welcome_messages, member_left_messages
-    with Session() as session:
-        chat_config = ChatConfig(chat=message.text, accounts=accounts)
-        session.add(chat_config)
-        session.commit()
-        session.flush()
-        chat_config_id = chat_config.id
+    chat_config = ChatConfig(chat=message.text, accounts=accounts)
+    accounts_session.add(chat_config)
+    accounts_session.commit()
+    accounts_session.flush()
+    chat_config_id = chat_config.id
     welcome_messages = []
     member_left_messages = []
     bot.send_message(
