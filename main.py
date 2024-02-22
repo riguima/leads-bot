@@ -2,9 +2,10 @@ import asyncio
 import re
 from random import choice
 from uuid import uuid4
+from time import sleep
 
 from sqlalchemy import select
-from telebot import TeleBot
+from telebot.async_telebot import AsyncTeleBot
 from telebot.util import quick_markup, update_types
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError
@@ -14,22 +15,20 @@ from leads_bot.database import Session
 from leads_bot.models import (Account, ChatConfig, MemberLeftMessage,
                               WelcomeMessage)
 
-bot = TeleBot(config['bot_token'])
+bot = AsyncTeleBot(config['bot_token'])
 
 showing_chats_ids = False
 user_id = None
 chat_config_id = None
 accounts = []
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
 welcome_messages = []
 member_left_messages = []
 accounts_session = Session()
-clients = {}
+users = {}
 
 
 @bot.message_handler(commands=['start', 'help'])
-def start(message):
+async def start(message):
     with Session() as session:
         accounts_usernames = [
             a.username for a in session.scalars(select(Account)).all()
@@ -38,7 +37,7 @@ def start(message):
             message.chat.username == config['username']
             or message.chat.username in accounts_usernames
         ):
-            bot.send_message(
+            await bot.send_message(
                 message.chat.id,
                 'Escolha uma opção:',
                 reply_markup=quick_markup(
@@ -61,27 +60,25 @@ def start(message):
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'add_account')
-def add_account(callback_query):
-    bot.send_message(
+async def add_account(callback_query):
+    await bot.send_message(
         callback_query.message.chat.id,
         'Digite o número de telefone da conta nesse formato: +5511999999999',
     )
     bot.register_next_step_handler(callback_query.message, on_phone_number)
 
 
-def on_phone_number(message):
+async def on_phone_number(message):
     account_id = str(uuid4())
     try:
-        client = loop.run_until_complete(
-            send_code_request(message, account_id)
-        )
+        client = await send_code_request(message, account_id)
     except PhoneCodeInvalidError:
-        bot.send_message(
+        await bot.send_message(
             message.chat.id,
             'Número de telefone inválido, conta não adicionada',
         )
-        start(message)
-    bot.send_message(
+        await start(message)
+    await bot.send_message(
         message.chat.id, 'Digite o código enviado com esse formato: a79304'
     )
     bot.register_next_step_handler(
@@ -96,7 +93,7 @@ async def send_code_request(message, account_id):
         await client.send_code_request(message.text)
         return client
     else:
-        bot.send_message(message.chat.id, 'Conta adicionada')
+        await bot.send_message(message.chat.id, 'Conta adicionada')
         me = await client.get_me()
         with Session() as session:
             accounts_usernames = [
@@ -109,16 +106,14 @@ async def send_code_request(message, account_id):
             if username not in accounts_usernames:
                 session.add(Account(account_id=account_id, username=username))
                 session.commit()
-        start(message)
+        await start(message)
 
 
-def on_code(message, client, account_id, phone_number):
+async def on_code(message, client, account_id, phone_number):
     try:
-        loop.run_until_complete(
-            sign_in_client(client, account_id, phone_number, message.text[1:])
-        )
+        await sign_in_client(client, account_id, phone_number, message.text[1:])
     except SessionPasswordNeededError:
-        bot.send_message(message.chat.id, 'Digite a senha')
+        await bot.send_message(message.chat.id, 'Digite a senha')
         bot.register_next_step_handler(
             message,
             lambda m: on_password(
@@ -126,24 +121,20 @@ def on_code(message, client, account_id, phone_number):
             ),
         )
     else:
-        bot.send_message(message.chat.id, 'Conta adicionada')
-        start(message)
+        await bot.send_message(message.chat.id, 'Conta adicionada')
+        await start(message)
 
 
-def on_password(message, client, account_id, phone_number, code):
+async def on_password(message, client, account_id, phone_number, code):
     try:
-        loop.run_until_complete(
-            sign_in_client(
-                client, account_id, phone_number, code, message.text
-            )
-        )
+        await sign_in_client(client, account_id, phone_number, code, message.text)
     except SessionPasswordNeededError:
-        bot.send_message(
+        await bot.send_message(
             message.chat.id, 'Senha inválida, conta não foi adicionada'
         )
     else:
-        bot.send_message(message.chat.id, 'Conta adicionada')
-    start(message)
+        await bot.send_message(message.chat.id, 'Conta adicionada')
+    await start(message)
 
 
 async def sign_in_client(
@@ -168,7 +159,7 @@ async def sign_in_client(
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'remove_account')
-def remove_account(callback_query):
+async def remove_account(callback_query):
     with Session() as session:
         reply_markup = {}
         for account in session.scalars(select(Account)).all():
@@ -176,7 +167,7 @@ def remove_account(callback_query):
                 'callback_data': f'remove_account:{account.id}'
             }
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Escolha uma conta para remover:',
             reply_markup=quick_markup(reply_markup, row_width=1),
@@ -186,18 +177,18 @@ def remove_account(callback_query):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'remove_account:\d+', c.data))
 )
-def remove_account_action(callback_query):
+async def remove_account_action(callback_query):
     with Session() as session:
         account_id = int(callback_query.data.split(':')[-1])
         account = session.get(Account, account_id)
         session.delete(account)
         session.commit()
-        bot.send_message(callback_query.message.chat.id, 'Conta Removida!')
-        start(callback_query.message)
+        await bot.send_message(callback_query.message.chat.id, 'Conta Removida!')
+        await start(callback_query.message)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'show_accounts')
-def show_accounts(callback_query):
+async def show_accounts(callback_query):
     with Session() as session:
         reply_markup = {}
         for account in session.scalars(select(Account)).all():
@@ -205,7 +196,7 @@ def show_accounts(callback_query):
                 'callback_data': f'show_account:{account.id}'
             }
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Contas:',
             reply_markup=quick_markup(reply_markup, row_width=1),
@@ -213,7 +204,7 @@ def show_accounts(callback_query):
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'configure_chat')
-def configure_chat(callback_query):
+async def configure_chat(callback_query):
     global accounts
     accounts = []
     with Session() as session:
@@ -224,7 +215,7 @@ def configure_chat(callback_query):
             }
         reply_markup['Finalizar'] = {'callback_data': 'on_account:0'}
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Escolha uma conta:',
             reply_markup=quick_markup(reply_markup, row_width=1),
@@ -234,7 +225,7 @@ def configure_chat(callback_query):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'on_account:\d+', c.data))
 )
-def on_account(callback_query):
+async def on_account(callback_query):
     account_id = int(callback_query.data.split(':')[-1])
     reply_markup = {}
     if account_id:
@@ -248,20 +239,20 @@ def on_account(callback_query):
     if account_id and reply_markup:
         reply_markup['Finalizar'] = {'callback_data': 'on_account:0'}
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Escolha uma conta:',
             reply_markup=quick_markup(reply_markup, row_width=1),
         )
     else:
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Digite o ID ou Título do Canal/Grupo',
         )
         bot.register_next_step_handler(callback_query.message, on_chat)
 
 
-def on_chat(message):
+async def on_chat(message):
     global chat_config_id, welcome_messages, member_left_messages
     chat_config = ChatConfig(chat=message.text, accounts=accounts)
     accounts_session.add(chat_config)
@@ -270,16 +261,16 @@ def on_chat(message):
     chat_config_id = chat_config.id
     welcome_messages = []
     member_left_messages = []
-    bot.send_message(
+    await bot.send_message(
         message.chat.id,
         'Mande as mensagens que deseja enviar de boas-vindas, digite /pronto para finalizar',
     )
     bot.register_next_step_handler(message, on_welcome_message)
 
 
-def on_welcome_message(message):
+async def on_welcome_message(message):
     if message.text == '/pronto':
-        bot.send_message(
+        await bot.send_message(
             message.chat.id,
             'Mande as mensagens que deseja enviar quando o membro sair do grupo, digite /pronto para finalizar',
         )
@@ -290,17 +281,17 @@ def on_welcome_message(message):
         bot.register_next_step_handler(message, on_welcome_message)
 
 
-def on_member_left_message(message):
+async def on_member_left_message(message):
     if message.text == '/pronto':
-        bot.send_message(message.chat.id, 'Canal/Grupo Configurado!')
-        start(message)
+        await bot.send_message(message.chat.id, 'Canal/Grupo Configurado!')
+        await start(message)
     else:
         member_left_message = add_message_model(message, MemberLeftMessage)
         member_left_messages.append(member_left_message)
         bot.register_next_step_handler(message, on_member_left_message)
 
 
-def add_message_model(message, model_class):
+async def add_message_model(message, model_class):
     with Session() as session:
         message_model = model_class(
             chat_config_id=chat_config_id,
@@ -326,7 +317,7 @@ def add_message_model(message, model_class):
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'remove_from_chat')
-def remove_from_chat(callback_query):
+async def remove_from_chat(callback_query):
     with Session() as session:
         reply_markup = {}
         for chat_config in session.scalars(select(ChatConfig)).all():
@@ -339,7 +330,7 @@ def remove_from_chat(callback_query):
                     'callback_data': f'remove_from_chat:{chat_config.id}'
                 }
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Selecione um Canal/Grupo para remover:',
             reply_markup=quick_markup(reply_markup, row_width=1),
@@ -349,20 +340,20 @@ def remove_from_chat(callback_query):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'remove_from_chat:\d+', c.data))
 )
-def remove_from_chat_action(callback_query):
+async def remove_from_chat_action(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
         session.delete(chat_config)
         session.commit()
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id, 'Removido de Canal/Grupo!'
         )
-        start(callback_query.message)
+        await start(callback_query.message)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'show_chats')
-def show_chats(callback_query):
+async def show_chats(callback_query):
     with Session() as session:
         reply_markup = {}
         for chat_config in session.scalars(select(ChatConfig)).all():
@@ -375,7 +366,7 @@ def show_chats(callback_query):
                     'callback_data': f'show_chat:{chat_config.id}'
                 }
         reply_markup['Voltar'] = {'callback_data': 'return_to_start'}
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Canais/Grupos:',
             reply_markup=quick_markup(reply_markup, row_width=1),
@@ -383,14 +374,14 @@ def show_chats(callback_query):
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'return_to_start')
-def return_to_start(callback_query):
-    start(callback_query.message)
+async def return_to_start(callback_query):
+    await start(callback_query.message)
 
 
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'show_chat:\d+', c.data))
 )
-def show_chat_action(callback_query):
+async def show_chat_action(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
@@ -400,7 +391,7 @@ def show_chat_action(callback_query):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'show_welcome_message:\d+', c.data))
 )
-def show_welcome_message(callback_query):
+async def show_welcome_message(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
@@ -414,7 +405,7 @@ def show_welcome_message(callback_query):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'show_member_left_message:\d+', c.data))
 )
-def show_member_left_message(callback_query):
+async def show_member_left_message(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
@@ -428,14 +419,14 @@ def show_member_left_message(callback_query):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'edit_welcome_message:\d+', c.data))
 )
-def edit_welcome_message(callback_query):
+async def edit_welcome_message(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
         for message in chat_config.welcome_messages:
             session.delete(message)
             session.commit()
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Mande as mensagens que deseja enviar de boas-vindas, digite /pronto para finalizar',
         )
@@ -444,7 +435,7 @@ def edit_welcome_message(callback_query):
         )
 
 
-def on_edit_welcome_message(message):
+async def on_edit_welcome_message(message):
     with Session() as session:
         chat_config = session.get(ChatConfig, chat_config_id)
     if message.text == '/pronto':
@@ -458,14 +449,14 @@ def on_edit_welcome_message(message):
 @bot.callback_query_handler(
     func=lambda c: bool(re.findall(r'edit_member_left_message:\d+', c.data))
 )
-def edit_member_left_message(callback_query):
+async def edit_member_left_message(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
         for message in chat_config.member_left_messages:
             session.delete(message)
             session.commit()
-        bot.send_message(
+        await bot.send_message(
             callback_query.message.chat.id,
             'Mande as mensagens que deseja enviar quando o membro sair do grupo, digite /pronto para finalizar',
         )
@@ -474,7 +465,7 @@ def edit_member_left_message(callback_query):
         )
 
 
-def on_edit_member_left_message(message):
+async def on_edit_member_left_message(message):
     with Session() as session:
         chat_config = session.get(ChatConfig, chat_config_id)
     if message.text == '/pronto':
@@ -485,7 +476,7 @@ def on_edit_member_left_message(message):
         bot.register_next_step_handler(message, on_edit_member_left_message)
 
 
-def send_message_from_model(chat, model):
+async def send_message_from_model(chat, model):
     medias = {
         model.photo_id: bot.send_photo,
         model.audio_id: bot.send_audio,
@@ -493,67 +484,65 @@ def send_message_from_model(chat, model):
         model.video_id: bot.send_video,
     }
     if model.text:
-        bot.send_message(chat, model.text)
+        await bot.send_message(chat, model.text)
     else:
         for media_id, function in medias.items():
             if media_id:
-                file_info = bot.get_file(media_id)
-                content = bot.download_file(file_info.file_path)
+                file_info = await bot.get_file(media_id)
+                content = await bot.download_file(file_info.file_path)
                 function(chat, content, model.caption)
 
 
 async def send_message_from_model_with_client(
     user_id, model, account_id, chat=None
 ):
-    global clients
+    global users
     medias = [
         model.photo_id,
         model.audio_id,
         model.document_id,
         model.video_id,
     ]
-    if account_id in clients:
-        client = clients[account_id]
-    else:
-        client = TelegramClient(
-            account_id, config['api_id'], config['api_hash']
-        )
-        await client.start()
-        clients[account_id] = client
-    user = None
-    if chat:
-        member_in_chat = False
-        while not member_in_chat:
-            members = await client.get_participants(entity=chat)
-            for member in members:
-                if member.id == user_id:
-                    user = member
-                    member_in_chat = True
-    else:
-        user = await client.get_entity(user_id)
-    if user:
-        if model.text:
-            await client.send_message(user, model.text)
+    if user_id in users:
+        account_id = users[user_id]
+    async with TelegramClient(account_id, config['api_id'], config['api_hash']) as client:
+        users[user_id] = account_id
+        user = None
+        if chat:
+            member_in_chat = False
+            while not member_in_chat:
+                members = await client.get_participants(entity=chat)
+                for member in members:
+                    if member.id == user_id:
+                        user = member
+                        member_in_chat = True
         else:
-            for media_id in medias:
-                if media_id:
-                    file_info = bot.get_file(media_id)
-                    content = bot.download_file(file_info.file_path)
-                    with open(file_info.file_path, 'wb') as f:
-                        f.write(content)
-                    await client.send_file(
-                        user, file_info.file_path, caption=model.caption
-                    )
+            user = await client.get_entity(user_id)
+        print(user)
+        if user:
+            if model.text:
+                print('Sended')
+                await client.send_message(user, model.text)
+            else:
+                for media_id in medias:
+                    if media_id:
+                        file_info = await bot.get_file(media_id)
+                        content = await bot.download_file(file_info.file_path)
+                        with open(file_info.file_path, 'wb') as f:
+                            f.write(content)
+                        await client.send_file(
+                            user, file_info.file_path, caption=model.caption
+                        )
 
 
-def send_chat_options(message, chat_config):
+async def send_chat_options(message, chat_config):
     global chat_config_id
     chat_config_id = chat_config.id
     if re.findall(r'^-\d+$l', chat_config.chat):
-        chat_title = bot.get_chat(int(chat_config.chat)).title
+        chat_title = await bot.get_chat(int(chat_config.chat)).title
     else:
         chat_title = chat_config.chat
-    bot.send_message(
+    await bot.send_message(
         message.chat.id,
         chat_title,
         reply_markup=quick_markup(
@@ -578,10 +567,10 @@ def send_chat_options(message, chat_config):
 
 
 @bot.callback_query_handler(func=lambda c: c.data == 'show_chats_ids')
-def show_chats_ids(callback_query):
+async def show_chats_ids(callback_query):
     global showing_chats_ids, user_id
     user_id = callback_query.message.chat.id
-    bot.send_message(
+    await bot.send_message(
         callback_query.message.chat.id,
         'Vai começar a mostrar IDs de Canais/Grupos onde o Bot estiver adicionado, quando chegar mensagens, digite /parar_mostrar_ids para parar',
     )
@@ -589,107 +578,98 @@ def show_chats_ids(callback_query):
 
 
 @bot.message_handler(commands=['parar_mostrar_ids'])
-def stop_show_chats_ids(message):
+async def stop_show_chats_ids(message):
     global showing_chats_ids
-    bot.send_message(message.chat.id, 'Parou de mostrar IDs de Canais/Grupos')
-    start(message)
+    await bot.send_message(message.chat.id, 'Parou de mostrar IDs de Canais/Grupos')
+    await start(message)
     showing_chats_ids = False
 
 
 @bot.message_handler(content_types=['new_chat_members'])
-def send_welcome_message(message):
+async def send_welcome_message(message):
+    print('Teste')
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
+                account_id = choice(chat_config.accounts).account_id
                 for welcome_message in chat_config.welcome_messages:
-                    account_id = choice(chat_config.accounts).account_id
-                    loop.run_until_complete(
-                        send_message_from_model_with_client(
-                            message.from_user.id,
-                            welcome_message,
-                            account_id,
-                            chat=message.chat.id,
-                        )
+                    await send_message_from_model_with_client(
+                        message.from_user.id,
+                        welcome_message,
+                        account_id,
+                        chat=message.chat.id,
                     )
 
 
 @bot.message_handler(content_types=['left_chat_member'])
-def send_member_left_message(message):
+async def send_member_left_message(message):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
+                account_id = choice(chat_config.accounts).account_id
                 for member_left_message in chat_config.member_left_messages:
-                    account_id = choice(chat_config.accounts).account_id
-                    loop.run_until_complete(
-                        send_message_from_model_with_client(
-                            message.from_user.id,
-                            member_left_message,
-                            account_id,
-                        )
+                    await send_message_from_model_with_client(
+                        message.from_user.id,
+                        member_left_message,
+                        account_id,
                     )
 
 
 @bot.chat_join_request_handler()
-def on_chat_joint_request(request):
+async def on_chat_joint_request(request):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(request.chat.id), request.chat.title]:
+                account_id = choice(chat_config.accounts).account_id
                 for welcome_message in chat_config.welcome_messages:
-                    account_id = choice(chat_config.accounts).account_id
-                    loop.run_until_complete(
-                        send_message_from_model_with_client(
-                            request.user_chat_id,
-                            welcome_message,
-                            account_id,
-                            chat=request.chat.id,
-                        )
+                    await send_message_from_model_with_client(
+                        request.user_chat_id,
+                        welcome_message,
+                        account_id,
+                        chat=request.chat.id,
                     )
 
 
 @bot.chat_member_handler()
-def send_channel_member_message(update):
+async def send_channel_member_message(update):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(update.chat.id), update.chat.title]:
                 if update.new_chat_member.status == 'member':
+                    account_id = choice(chat_config.accounts).account_id
                     for welcome_message in chat_config.welcome_messages:
-                        account_id = choice(chat_config.accounts).account_id
-                        loop.run_until_complete(
-                            send_message_from_model_with_client(
-                                update.from_user.id,
-                                welcome_message,
-                                account_id,
-                                chat=update.chat.id,
-                            )
+                        await send_message_from_model_with_client(
+                            update.from_user.id,
+                            welcome_message,
+                            account_id,
+                            chat=update.chat.id,
                         )
                 elif update.new_chat_member.status == 'left':
+                    account_id = choice(chat_config.accounts).account_id
                     for (
                         member_left_message
                     ) in chat_config.member_left_messages:
-                        account_id = choice(chat_config.accounts).account_id
-                        loop.run_until_complete(
-                            send_message_from_model_with_client(
-                                update.from_user.id,
-                                member_left_message,
-                                account_id,
-                            )
+                        await send_message_from_model_with_client(
+                            update.from_user.id,
+                            member_left_message,
+                            account_id,
                         )
 
 
 @bot.message_handler()
-def show_chat_id(message):
+async def show_chat_id(message):
     if showing_chats_ids:
-        bot.send_message(
+        await bot.send_message(
             user_id,
             f'{message.chat.title or message.chat.username} | {message.chat.id}',
         )
 
 
 @bot.channel_post_handler()
-def show_channel_id(message):
+async def show_channel_id(message):
     if showing_chats_ids:
-        bot.send_message(user_id, f'{message.chat.title} | {message.chat.id}')
+        await bot.send_message(user_id, f'{message.chat.title} | {message.chat.id}')
 
 
 if __name__ == '__main__':
-    bot.infinity_polling(allowed_updates=update_types)
+    asyncio.run(bot.polling(allowed_updates=update_types))
