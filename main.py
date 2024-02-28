@@ -2,10 +2,12 @@ import asyncio
 import re
 from random import choice
 from uuid import uuid4
-from time import sleep
 
 from sqlalchemy import select
+from telebot import asyncio_filters
 from telebot.async_telebot import AsyncTeleBot
+from telebot.asyncio_handler_backends import State, StatesGroup
+from telebot.asyncio_storage import StateMemoryStorage
 from telebot.util import quick_markup, update_types
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError
@@ -15,11 +17,24 @@ from leads_bot.database import Session
 from leads_bot.models import (Account, ChatConfig, MemberLeftMessage,
                               WelcomeMessage)
 
-bot = AsyncTeleBot(config['bot_token'])
+bot = AsyncTeleBot(config['bot_token'], state_storage=StateMemoryStorage())
+
+
+class MyStates(StatesGroup):
+    phone_number = State()
+    code = State()
+    password = State()
+    chat = State()
+    welcome_message = State()
+    member_left_message = State()
+    edit_welcome_message = State()
+    edit_member_left_message = State()
+
 
 showing_chats_ids = False
 user_id = None
 chat_config_id = None
+current_client = None
 accounts = []
 welcome_messages = []
 member_left_messages = []
@@ -65,13 +80,25 @@ async def add_account(callback_query):
         callback_query.message.chat.id,
         'Digite o número de telefone da conta nesse formato: +5511999999999',
     )
-    bot.register_next_step_handler(callback_query.message, on_phone_number)
+    await bot.set_state(
+        callback_query.message.chat.id,
+        MyStates.phone_number,
+        callback_query.message.chat.id,
+    )
 
 
+@bot.message_handler(state=MyStates.phone_number)
 async def on_phone_number(message):
+    global current_client
     account_id = str(uuid4())
     try:
         client = await send_code_request(message, account_id)
+        current_client = client
+        async with bot.retrieve_data(
+            message.from_user.id, message.chat.id
+        ) as data:
+            data['account_id'] = account_id
+            data['phone_number'] = message.text
     except PhoneCodeInvalidError:
         await bot.send_message(
             message.chat.id,
@@ -81,9 +108,7 @@ async def on_phone_number(message):
     await bot.send_message(
         message.chat.id, 'Digite o código enviado com esse formato: a79304'
     )
-    bot.register_next_step_handler(
-        message, lambda m: on_code(m, client, account_id, message.text)
-    )
+    await bot.set_state(message.chat.id, MyStates.code, message.chat.id)
 
 
 async def send_code_request(message, account_id):
@@ -109,32 +134,51 @@ async def send_code_request(message, account_id):
         await start(message)
 
 
-async def on_code(message, client, account_id, phone_number):
-    try:
-        await sign_in_client(client, account_id, phone_number, message.text[1:])
-    except SessionPasswordNeededError:
-        await bot.send_message(message.chat.id, 'Digite a senha')
-        bot.register_next_step_handler(
-            message,
-            lambda m: on_password(
-                m, client, account_id, phone_number, message.text
-            ),
-        )
-    else:
-        await bot.send_message(message.chat.id, 'Conta adicionada')
+@bot.message_handler(state=MyStates.code)
+async def on_code(message):
+    global current_client
+    async with bot.retrieve_data(
+        message.from_user.id, message.chat.id
+    ) as data:
+        try:
+            await sign_in_client(
+                current_client,
+                data['account_id'],
+                data['phone_number'],
+                message.text[1:],
+            )
+        except SessionPasswordNeededError:
+            data['code'] = message.text
+            await bot.send_message(message.chat.id, 'Digite a senha')
+            await bot.set_state(
+                message.chat.id, MyStates.password, message.chat.id
+            )
+        else:
+            await bot.send_message(message.chat.id, 'Conta adicionada')
+            await start(message)
+
+
+@bot.message_handler(state=MyStates.password)
+async def on_password(message):
+    global current_client
+    async with bot.retrieve_data(
+        message.from_user.id, message.chat.id
+    ) as data:
+        try:
+            await sign_in_client(
+                current_client,
+                data['account_id'],
+                data['phone_number'],
+                data['code'],
+                message.text,
+            )
+        except SessionPasswordNeededError:
+            await bot.send_message(
+                message.chat.id, 'Senha inválida, conta não foi adicionada'
+            )
+        else:
+            await bot.send_message(message.chat.id, 'Conta adicionada')
         await start(message)
-
-
-async def on_password(message, client, account_id, phone_number, code):
-    try:
-        await sign_in_client(client, account_id, phone_number, code, message.text)
-    except SessionPasswordNeededError:
-        await bot.send_message(
-            message.chat.id, 'Senha inválida, conta não foi adicionada'
-        )
-    else:
-        await bot.send_message(message.chat.id, 'Conta adicionada')
-    await start(message)
 
 
 async def sign_in_client(
@@ -183,7 +227,9 @@ async def remove_account_action(callback_query):
         account = session.get(Account, account_id)
         session.delete(account)
         session.commit()
-        await bot.send_message(callback_query.message.chat.id, 'Conta Removida!')
+        await bot.send_message(
+            callback_query.message.chat.id, 'Conta Removida!'
+        )
         await start(callback_query.message)
 
 
@@ -249,9 +295,14 @@ async def on_account(callback_query):
             callback_query.message.chat.id,
             'Digite o ID ou Título do Canal/Grupo',
         )
-        bot.register_next_step_handler(callback_query.message, on_chat)
+        await bot.set_state(
+            callback_query.message.chat.id,
+            MyStates.chat,
+            callback_query.message.chat.id,
+        )
 
 
+@bot.message_handler(state=MyStates.chat)
 async def on_chat(message):
     global chat_config_id, welcome_messages, member_left_messages
     chat_config = ChatConfig(chat=message.text, accounts=accounts)
@@ -265,22 +316,30 @@ async def on_chat(message):
         message.chat.id,
         'Mande as mensagens que deseja enviar de boas-vindas, digite /pronto para finalizar',
     )
-    bot.register_next_step_handler(message, on_welcome_message)
+    await bot.set_state(
+        message.chat.id, MyStates.welcome_message, message.chat.id
+    )
 
 
+@bot.message_handler(state=MyStates.welcome_message)
 async def on_welcome_message(message):
     if message.text == '/pronto':
         await bot.send_message(
             message.chat.id,
             'Mande as mensagens que deseja enviar quando o membro sair do grupo, digite /pronto para finalizar',
         )
-        bot.register_next_step_handler(message, on_member_left_message)
+        await bot.set_state(
+            message.chat.id, MyStates.member_left_message, message.chat.id
+        )
     else:
         welcome_message = add_message_model(message, WelcomeMessage)
         welcome_messages.append(welcome_message)
-        bot.register_next_step_handler(message, on_welcome_message)
+        await bot.set_state(
+            message.chat.id, MyStates.welcome_message, message.chat.id
+        )
 
 
+@bot.message_handler(state=MyStates.member_left_message)
 async def on_member_left_message(message):
     if message.text == '/pronto':
         await bot.send_message(message.chat.id, 'Canal/Grupo Configurado!')
@@ -288,10 +347,12 @@ async def on_member_left_message(message):
     else:
         member_left_message = add_message_model(message, MemberLeftMessage)
         member_left_messages.append(member_left_message)
-        bot.register_next_step_handler(message, on_member_left_message)
+        await bot.set_state(
+            message.chat.id, MyStates.member_left_message, message.chat.id
+        )
 
 
-async def add_message_model(message, model_class):
+def add_message_model(message, model_class):
     with Session() as session:
         message_model = model_class(
             chat_config_id=chat_config_id,
@@ -385,7 +446,7 @@ async def show_chat_action(callback_query):
     with Session() as session:
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
-        send_chat_options(callback_query.message, chat_config)
+        await send_chat_options(callback_query.message, chat_config)
 
 
 @bot.callback_query_handler(
@@ -396,10 +457,10 @@ async def show_welcome_message(callback_query):
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
         for welcome_message in chat_config.welcome_messages:
-            send_message_from_model(
+            await send_message_from_model(
                 callback_query.message.chat.id, welcome_message
             )
-        send_chat_options(callback_query.message, chat_config)
+        await send_chat_options(callback_query.message, chat_config)
 
 
 @bot.callback_query_handler(
@@ -410,10 +471,10 @@ async def show_member_left_message(callback_query):
         chat_config_id = int(callback_query.data.split(':')[-1])
         chat_config = session.get(ChatConfig, chat_config_id)
         for member_left_message in chat_config.member_left_messages:
-            send_message_from_model(
+            await send_message_from_model(
                 callback_query.message.chat.id, member_left_message
             )
-        send_chat_options(callback_query.message, chat_config)
+        await send_chat_options(callback_query.message, chat_config)
 
 
 @bot.callback_query_handler(
@@ -430,20 +491,25 @@ async def edit_welcome_message(callback_query):
             callback_query.message.chat.id,
             'Mande as mensagens que deseja enviar de boas-vindas, digite /pronto para finalizar',
         )
-        bot.register_next_step_handler(
-            callback_query.message, on_edit_welcome_message
+        await bot.set_state(
+            callback_query.message.chat.id,
+            MyStates.edit_welcome_message,
+            callback_query.message.chat.id,
         )
 
 
+@bot.message_handler(state=MyStates.edit_welcome_message)
 async def on_edit_welcome_message(message):
     with Session() as session:
         chat_config = session.get(ChatConfig, chat_config_id)
     if message.text == '/pronto':
-        send_chat_options(message, chat_config)
+        await send_chat_options(message, chat_config)
     else:
         welcome_message = add_message_model(message, WelcomeMessage)
         welcome_messages.append(welcome_message)
-        bot.register_next_step_handler(message, on_edit_welcome_message)
+        await bot.set_state(
+            message.chat.id, MyStates.edit_welcome_message, message.chat.id
+        )
 
 
 @bot.callback_query_handler(
@@ -460,20 +526,25 @@ async def edit_member_left_message(callback_query):
             callback_query.message.chat.id,
             'Mande as mensagens que deseja enviar quando o membro sair do grupo, digite /pronto para finalizar',
         )
-        bot.register_next_step_handler(
-            callback_query.message, on_edit_member_left_message
+        await bot.set_state(
+            callback_query.message.chat.id,
+            MyStates.edit_member_left_message,
+            callback_query.message.chat.id,
         )
 
 
+@bot.message_handler(state=MyStates.edit_member_left_message)
 async def on_edit_member_left_message(message):
     with Session() as session:
         chat_config = session.get(ChatConfig, chat_config_id)
     if message.text == '/pronto':
-        send_chat_options(message, chat_config)
+        await send_chat_options(message, chat_config)
     else:
         member_left_message = add_message_model(message, MemberLeftMessage)
         member_left_messages.append(member_left_message)
-        bot.register_next_step_handler(message, on_edit_member_left_message)
+        await bot.set_state(
+            message.chat.id, MyStates.edit_member_left_message, message.chat.id
+        )
 
 
 async def send_message_from_model(chat, model):
@@ -505,23 +576,24 @@ async def send_message_from_model_with_client(
     ]
     if user_id in users:
         account_id = users[user_id]
-    async with TelegramClient(account_id, config['api_id'], config['api_hash']) as client:
+    async with TelegramClient(
+        account_id, config['api_id'], config['api_hash']
+    ) as client:
         users[user_id] = account_id
         user = None
+        member_in_chat = False
         if chat:
-            member_in_chat = False
             while not member_in_chat:
                 members = await client.get_participants(entity=chat)
                 for member in members:
                     if member.id == user_id:
                         user = member
                         member_in_chat = True
-        else:
+                break
+        if not chat or not member_in_chat:
             user = await client.get_entity(user_id)
-        print(user)
         if user:
             if model.text:
-                print('Sended')
                 await client.send_message(user, model.text)
             else:
                 for media_id in medias:
@@ -580,25 +652,31 @@ async def show_chats_ids(callback_query):
 @bot.message_handler(commands=['parar_mostrar_ids'])
 async def stop_show_chats_ids(message):
     global showing_chats_ids
-    await bot.send_message(message.chat.id, 'Parou de mostrar IDs de Canais/Grupos')
+    await bot.send_message(
+        message.chat.id, 'Parou de mostrar IDs de Canais/Grupos'
+    )
     await start(message)
     showing_chats_ids = False
 
 
 @bot.message_handler(content_types=['new_chat_members'])
 async def send_welcome_message(message):
-    print('Teste')
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 account_id = choice(chat_config.accounts).account_id
                 for welcome_message in chat_config.welcome_messages:
-                    await send_message_from_model_with_client(
-                        message.from_user.id,
-                        welcome_message,
-                        account_id,
-                        chat=message.chat.id,
-                    )
+                    try:
+                        await send_message_from_model_with_client(
+                            message.from_user.id,
+                            welcome_message,
+                            account_id,
+                            chat=message.chat.id,
+                        )
+                    except RuntimeError:
+                        await asyncio.sleep(3)
+                        await send_welcome_message(message)
+                break
 
 
 @bot.message_handler(content_types=['left_chat_member'])
@@ -608,26 +686,36 @@ async def send_member_left_message(message):
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
                 account_id = choice(chat_config.accounts).account_id
                 for member_left_message in chat_config.member_left_messages:
-                    await send_message_from_model_with_client(
-                        message.from_user.id,
-                        member_left_message,
-                        account_id,
-                    )
+                    try:
+                        await send_message_from_model_with_client(
+                            message.from_user.id,
+                            member_left_message,
+                            account_id,
+                        )
+                    except RuntimeError:
+                        await asyncio.sleep(3)
+                        await send_member_left_message(message)
+                break
 
 
 @bot.chat_join_request_handler()
-async def on_chat_joint_request(request):
+async def on_chat_join_request(request):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(request.chat.id), request.chat.title]:
                 account_id = choice(chat_config.accounts).account_id
                 for welcome_message in chat_config.welcome_messages:
-                    await send_message_from_model_with_client(
-                        request.user_chat_id,
-                        welcome_message,
-                        account_id,
-                        chat=request.chat.id,
-                    )
+                    try:
+                        await send_message_from_model_with_client(
+                            request.user_chat_id,
+                            welcome_message,
+                            account_id,
+                            chat=request.chat.id,
+                        )
+                    except RuntimeError:
+                        await asyncio.sleep(3)
+                        await on_chat_join_request(request)
+                break
 
 
 @bot.chat_member_handler()
@@ -638,22 +726,32 @@ async def send_channel_member_message(update):
                 if update.new_chat_member.status == 'member':
                     account_id = choice(chat_config.accounts).account_id
                     for welcome_message in chat_config.welcome_messages:
-                        await send_message_from_model_with_client(
-                            update.from_user.id,
-                            welcome_message,
-                            account_id,
-                            chat=update.chat.id,
-                        )
+                        try:
+                            await send_message_from_model_with_client(
+                                update.from_user.id,
+                                welcome_message,
+                                account_id,
+                                chat=update.chat.id,
+                            )
+                        except RuntimeError:
+                            await asyncio.sleep(3)
+                            await send_channel_member_message(update)
+                    break
                 elif update.new_chat_member.status == 'left':
                     account_id = choice(chat_config.accounts).account_id
                     for (
                         member_left_message
                     ) in chat_config.member_left_messages:
-                        await send_message_from_model_with_client(
-                            update.from_user.id,
-                            member_left_message,
-                            account_id,
-                        )
+                        try:
+                            await send_message_from_model_with_client(
+                                update.from_user.id,
+                                member_left_message,
+                                account_id,
+                            )
+                        except RuntimeError:
+                            await asyncio.sleep(3)
+                            await send_channel_member_message(update)
+                    break
 
 
 @bot.message_handler()
@@ -668,8 +766,11 @@ async def show_chat_id(message):
 @bot.channel_post_handler()
 async def show_channel_id(message):
     if showing_chats_ids:
-        await bot.send_message(user_id, f'{message.chat.title} | {message.chat.id}')
+        await bot.send_message(
+            user_id, f'{message.chat.title} | {message.chat.id}'
+        )
 
 
 if __name__ == '__main__':
+    bot.add_custom_filter(asyncio_filters.StateFilter(bot))
     asyncio.run(bot.polling(allowed_updates=update_types))
