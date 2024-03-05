@@ -67,6 +67,8 @@ async def main():
                                     file_info.file_path,
                                     caption=model.caption,
                                 )
+                session.delete(message)
+                session.commit()
 
 
 if __name__ == '__main__':
