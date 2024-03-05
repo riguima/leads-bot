@@ -73,7 +73,7 @@ class Account(Base):
 
 
 class Message(Base):
-    __tablename__ = 'accounts'
+    __tablename__ = 'messages'
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[str]
     chat_id: Mapped[int]
