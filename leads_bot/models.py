@@ -72,4 +72,13 @@ class Account(Base):
     username: Mapped[str]
 
 
+class Message(Base):
+    __tablename__ = 'accounts'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str]
+    chat_id: Mapped[int]
+    welcome_message_id: Mapped[Optional[int]]
+    member_left_message_id: Mapped[Optional[int]]
+
+
 Base.metadata.create_all(db)

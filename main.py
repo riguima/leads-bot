@@ -1,6 +1,5 @@
 import asyncio
 import re
-from random import choice
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -14,7 +13,7 @@ from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError
 
 from leads_bot.config import config
 from leads_bot.database import Session
-from leads_bot.models import (Account, ChatConfig, MemberLeftMessage,
+from leads_bot.models import (Account, ChatConfig, MemberLeftMessage, Message,
                               WelcomeMessage)
 
 bot = AsyncTeleBot(config['bot_token'], state_storage=StateMemoryStorage())
@@ -39,7 +38,6 @@ accounts = []
 welcome_messages = []
 member_left_messages = []
 accounts_session = Session()
-users = {}
 
 
 @bot.message_handler(commands=['start', 'help'])
@@ -564,49 +562,6 @@ async def send_message_from_model(chat, model):
                 function(chat, content, model.caption)
 
 
-async def send_message_from_model_with_client(
-    user_id, model, account_id, chat=None
-):
-    global users
-    medias = [
-        model.photo_id,
-        model.audio_id,
-        model.document_id,
-        model.video_id,
-    ]
-    if user_id in users:
-        account_id = users[user_id]
-    async with TelegramClient(
-        account_id, config['api_id'], config['api_hash']
-    ) as client:
-        users[user_id] = account_id
-        user = None
-        member_in_chat = False
-        if chat:
-            while not member_in_chat:
-                members = await client.get_participants(entity=chat)
-                for member in members:
-                    if member.id == user_id:
-                        user = member
-                        member_in_chat = True
-                break
-        if not chat or not member_in_chat:
-            user = await client.get_entity(user_id)
-        if user:
-            if model.text:
-                await client.send_message(user, model.text)
-            else:
-                for media_id in medias:
-                    if media_id:
-                        file_info = await bot.get_file(media_id)
-                        content = await bot.download_file(file_info.file_path)
-                        with open(file_info.file_path, 'wb') as f:
-                            f.write(content)
-                        await client.send_file(
-                            user, file_info.file_path, caption=model.caption
-                        )
-
-
 async def send_chat_options(message, chat_config):
     global chat_config_id
     chat_config_id = chat_config.id
@@ -664,18 +619,14 @@ async def send_welcome_message(message):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
-                account_id = choice(chat_config.accounts).account_id
                 for welcome_message in chat_config.welcome_messages:
-                    try:
-                        await send_message_from_model_with_client(
-                            message.from_user.id,
-                            welcome_message,
-                            account_id,
-                            chat=message.chat.id,
-                        )
-                    except RuntimeError:
-                        await asyncio.sleep(3)
-                        await send_welcome_message(message)
+                    message_model = Message(
+                        user_id=message.from_user.id,
+                        chat_id=message.chat.id,
+                        welcome_message_id=welcome_message.id,
+                    )
+                    session.add(message_model)
+                    session.commit()
                 break
 
 
@@ -684,17 +635,14 @@ async def send_member_left_message(message):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(message.chat.id), message.chat.title]:
-                account_id = choice(chat_config.accounts).account_id
                 for member_left_message in chat_config.member_left_messages:
-                    try:
-                        await send_message_from_model_with_client(
-                            message.from_user.id,
-                            member_left_message,
-                            account_id,
-                        )
-                    except RuntimeError:
-                        await asyncio.sleep(3)
-                        await send_member_left_message(message)
+                    message_model = Message(
+                        user_id=message.from_user.id,
+                        chat_id=message.chat.id,
+                        member_left_message_id=member_left_message.id,
+                    )
+                    session.add(message_model)
+                    session.commit()
                 break
 
 
@@ -703,18 +651,14 @@ async def on_chat_join_request(request):
     with Session() as session:
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(request.chat.id), request.chat.title]:
-                account_id = choice(chat_config.accounts).account_id
                 for welcome_message in chat_config.welcome_messages:
-                    try:
-                        await send_message_from_model_with_client(
-                            request.user_chat_id,
-                            welcome_message,
-                            account_id,
-                            chat=request.chat.id,
-                        )
-                    except RuntimeError:
-                        await asyncio.sleep(3)
-                        await on_chat_join_request(request)
+                    message_model = Message(
+                        user_id=request.user_chat_id,
+                        chat_id=request.chat.id,
+                        welcome_message_id=welcome_message.id,
+                    )
+                    session.add(message_model)
+                    session.commit()
                 break
 
 
@@ -724,33 +668,26 @@ async def send_channel_member_message(update):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(update.chat.id), update.chat.title]:
                 if update.new_chat_member.status == 'member':
-                    account_id = choice(chat_config.accounts).account_id
                     for welcome_message in chat_config.welcome_messages:
-                        try:
-                            await send_message_from_model_with_client(
-                                update.from_user.id,
-                                welcome_message,
-                                account_id,
-                                chat=update.chat.id,
-                            )
-                        except RuntimeError:
-                            await asyncio.sleep(3)
-                            await send_channel_member_message(update)
+                        message_model = Message(
+                            user_id=update.from_user.id,
+                            chat_id=update.chat.id,
+                            welcome_message_id=welcome_message.id,
+                        )
+                        session.add(message_model)
+                        session.commit()
                     break
                 elif update.new_chat_member.status == 'left':
-                    account_id = choice(chat_config.accounts).account_id
                     for (
                         member_left_message
                     ) in chat_config.member_left_messages:
-                        try:
-                            await send_message_from_model_with_client(
-                                update.from_user.id,
-                                member_left_message,
-                                account_id,
-                            )
-                        except RuntimeError:
-                            await asyncio.sleep(3)
-                            await send_channel_member_message(update)
+                        message_model = Message(
+                            user_id=update.from_user.id,
+                            chat_id=update.chat.id,
+                            welcome_message_id=member_left_message.id,
+                        )
+                        session.add(message_model)
+                        session.commit()
                     break
 
 
