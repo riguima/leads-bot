@@ -684,7 +684,7 @@ async def send_channel_member_message(update):
                         message_model = Message(
                             user_id=update.from_user.id,
                             chat_id=update.chat.id,
-                            welcome_message_id=member_left_message.id,
+                            member_left_message_id=member_left_message.id,
                         )
                         session.add(message_model)
                         session.commit()
