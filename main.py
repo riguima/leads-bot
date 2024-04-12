@@ -1,5 +1,6 @@
 import asyncio
 import re
+import os
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -352,6 +353,11 @@ async def on_member_left_message(message):
 
 def add_message_model(message, model_class):
     with Session() as session:
+        text = message.text
+        for entity in message.entities:
+            if entity.type == 'text_link':
+                text_of_link = text[entity.offset - 1:entity.offset + entity.length]
+                text = text.replace(text_of_link, f'[{text_of_link}]({entity.url})')
         message_model = model_class(
             chat_config_id=chat_config_id,
             photo_id=None
@@ -668,6 +674,7 @@ async def send_channel_member_message(update):
         for chat_config in session.scalars(select(ChatConfig)).all():
             if chat_config.chat in [str(update.chat.id), update.chat.title]:
                 if update.new_chat_member.status == 'member':
+                    pass
                     for welcome_message in chat_config.welcome_messages:
                         message_model = Message(
                             user_id=update.from_user.id,
