@@ -4,11 +4,18 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-pytelegrambotapi = "*"
-toml = "*"
-sqlalchemy = "*"
+pytelegrambotapi = "==4.15.4"
+toml = "==0.10.2"
+sqlalchemy = "==2.0.25"
 telethon = "*"
 aiohttp = "*"
+certifi = "==2024.2.2"
+charset-normalizer = "==3.3.2"
+greenlet = "==3.0.3"
+idna = "==3.6"
+requests = "==2.31.0"
+typing-extensions = "==4.9.0"
+urllib3 = "==2.2.0"
 
 [dev-packages]
 blue = "*"
